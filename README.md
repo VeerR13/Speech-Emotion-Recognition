@@ -140,7 +140,7 @@ Feature arrays are cached to Drive after first extraction — subsequent runs sk
    - `ejlok1/toronto-emotional-speech-set-tess`
    - `ejlok1/cremad`
    - `ejlok1/surrey-audiovisual-expressed-emotion-savee`
-4. Set accelerator to **GPU T4 x2** (Settings → Accelerator)
+4. Set accelerator to **GPU P100** (Settings → Accelerator)
 5. Click **Run All**
 
 Training runs fully unattended (~8 hours). Download `best_ser_v2.keras`, `label_encoder.pkl`, `scaler.pkl` from the Output tab when done.
