@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: speech-emotion-recognition
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: PORT
+        value: 10000
+    autoDeploy: true
