@@ -19,12 +19,12 @@ app = Flask(__name__)
 CORS(app)
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
-EMOTIONS = ["angry", "happy", "neutral", "sad"]
+EMOTIONS = ["neutral", "calm", "happy", "sad", "angry", "fear", "disgust", "surprise"]
 
 SR = 22050
 DURATION = 3
 N_MELS = 128
-MEL_TIME_STEPS = 130
+MEL_TIME_STEPS = 128
 N_MFCC = 40
 
 model = None
@@ -36,11 +36,91 @@ def load_artifacts():
     global model, scaler, label_encoder
     try:
         import tensorflow as tf
-        model_path = os.path.join(MODEL_DIR, "best_ser_model.keras")
+
+        # ── Custom layers required for deserialization ──────────────────────
+        class ChannelMean(tf.keras.layers.Layer):
+            def call(self, x):
+                return tf.reduce_mean(x, axis=-1, keepdims=True)
+
+        class ChannelMax(tf.keras.layers.Layer):
+            def call(self, x):
+                return tf.reduce_max(x, axis=-1, keepdims=True)
+
+        class AttnWeightedSum(tf.keras.layers.Layer):
+            def call(self, inputs):
+                return tf.reduce_sum(inputs[0] * inputs[1], axis=1)
+
+        class FocalLoss(tf.keras.losses.Loss):
+            def __init__(self, gamma=2.0, smoothing=0.1, **kwargs):
+                super().__init__(**kwargs)
+                self.gamma = gamma
+                self.smoothing = smoothing
+
+            def call(self, y_true, y_pred):
+                y_pred = tf.clip_by_value(y_pred, 1e-7, 1.0)
+                ce = -tf.reduce_sum(y_true * tf.math.log(y_pred), axis=-1)
+                p_t = tf.reduce_sum(y_true * y_pred, axis=-1)
+                focal_weight = tf.pow(1.0 - p_t, self.gamma)
+                return tf.reduce_mean(focal_weight * ce)
+
+            def get_config(self):
+                config = super().get_config()
+                config.update({"gamma": self.gamma, "smoothing": self.smoothing})
+                return config
+
+        class WarmupCosine(tf.keras.optimizers.schedules.LearningRateSchedule):
+            def __init__(self, warmup_steps, total_steps, peak_lr=1e-3, min_lr=1e-6, **kwargs):
+                super().__init__(**kwargs)
+                self.warmup_steps = warmup_steps
+                self.total_steps = total_steps
+                self.peak_lr = peak_lr
+                self.min_lr = min_lr
+
+            def __call__(self, step):
+                step = tf.cast(step, tf.float32)
+                warmup = self.peak_lr * (step / self.warmup_steps)
+                cosine = self.min_lr + 0.5 * (self.peak_lr - self.min_lr) * (
+                    1 + tf.cos(np.pi * (step - self.warmup_steps) / (self.total_steps - self.warmup_steps))
+                )
+                return tf.where(step < self.warmup_steps, warmup, cosine)
+
+            def get_config(self):
+                return {
+                    "warmup_steps": self.warmup_steps,
+                    "total_steps": self.total_steps,
+                    "peak_lr": self.peak_lr,
+                    "min_lr": self.min_lr,
+                }
+
+        # ── Patched Lambda to handle missing output_shape ───────────────────
+        class PatchedLambda(tf.keras.layers.Lambda):
+            def __init__(self, *args, **kwargs):
+                if "output_shape" not in kwargs:
+                    kwargs["output_shape"] = lambda s: s
+                super().__init__(*args, **kwargs)
+
+        custom_objects = {
+            "ChannelMean": ChannelMean,
+            "ChannelMax": ChannelMax,
+            "AttnWeightedSum": AttnWeightedSum,
+            "FocalLoss": FocalLoss,
+            "WarmupCosine": WarmupCosine,
+            "Lambda": PatchedLambda,
+        }
+
+        model_path = os.path.join(MODEL_DIR, "best_ser_v2.keras")
+        if not os.path.exists(model_path):
+            model_path = os.path.join(MODEL_DIR, "best_ser_model.keras")
         if not os.path.exists(model_path):
             model_path = os.path.join(MODEL_DIR, "best_ser.keras")
-        model = tf.keras.models.load_model(model_path)
+
+        model = tf.keras.models.load_model(
+            model_path,
+            custom_objects=custom_objects,
+            compile=False,
+        )
         logger.info(f"Model loaded from {model_path}")
+
     except Exception as e:
         logger.error(f"Model load failed: {e}")
         model = None
@@ -68,7 +148,7 @@ def load_audio(file_bytes):
         tmp_path = tmp.name
     try:
         y, sr = librosa.load(tmp_path, sr=SR, duration=DURATION, mono=True)
-        y, _ = librosa.effects.trim(y, top_db=20)
+        y, _ = librosa.effects.trim(y, top_db=25)
         target_len = SR * DURATION
         if len(y) < target_len:
             y = np.pad(y, (0, target_len - len(y)))
@@ -136,59 +216,53 @@ def extract_flat_features(y, sr=SR):
     return np.array(feats, dtype=np.float32)
 
 
-def extract_mel_2d(y, sr=SR):
-    mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=N_MELS)
-    mel_db = librosa.power_to_db(mel, ref=np.max)
-    mel_db = (mel_db - mel_db.mean()) / (mel_db.std() + 1e-8)
-    if mel_db.shape[1] < MEL_TIME_STEPS:
-        pad_width = MEL_TIME_STEPS - mel_db.shape[1]
-        mel_db = np.pad(mel_db, ((0, 0), (0, pad_width)))
-    else:
-        mel_db = mel_db[:, :MEL_TIME_STEPS]
-    return mel_db[..., np.newaxis]
+def extract_mel_multiscale(y, sr=SR):
+    """3-channel multi-scale mel spectrogram matching training pipeline."""
+    channels = []
+    for n_fft in [512, 1024, 2048]:
+        mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=N_MELS, n_fft=n_fft)
+        mel_db = librosa.power_to_db(mel, ref=np.max)
+        mel_db = (mel_db - mel_db.mean()) / (mel_db.std() + 1e-8)
+        if mel_db.shape[1] < 128:
+            mel_db = np.pad(mel_db, ((0, 0), (0, 128 - mel_db.shape[1])))
+        else:
+            mel_db = mel_db[:, :128]
+        channels.append(mel_db)
+    return np.stack(channels, axis=-1)  # (128, 128, 3)
 
 
 def predict(file_bytes):
     y = load_audio(file_bytes)
 
     flat = extract_flat_features(y)
-    mel_2d = extract_mel_2d(y)
+    mel_3ch = extract_mel_multiscale(y)
 
     if scaler is not None:
         flat = scaler.transform(flat.reshape(1, -1))[0]
 
     flat_input = flat.reshape(1, -1)
-    mel_input = mel_2d[np.newaxis, ...]
+    mel_input = mel_3ch[np.newaxis, ...]  # (1, 128, 128, 3)
+
+    classes = label_encoder.classes_.tolist() if label_encoder is not None else EMOTIONS
 
     if model is None:
-        # Demo mode: return random plausible predictions
-        probs = np.random.dirichlet(np.ones(len(EMOTIONS)) * 2).tolist()
+        probs = np.random.dirichlet(np.ones(len(classes)) * 2).tolist()
         emotion_idx = int(np.argmax(probs))
-        emotion = EMOTIONS[emotion_idx]
-        confidence = probs[emotion_idx]
         return {
-            "emotion": emotion,
-            "confidence": round(confidence * 100, 1),
-            "probabilities": {e: round(p * 100, 1) for e, p in zip(EMOTIONS, probs)},
+            "emotion": classes[emotion_idx],
+            "confidence": round(probs[emotion_idx] * 100, 1),
+            "probabilities": {e: round(p * 100, 1) for e, p in zip(classes, probs)},
             "demo_mode": True,
         }
 
-    preds = model.predict([mel_input, flat_input], verbose=0)
+    preds = model.predict({"spectrogram": mel_input, "features": flat_input}, verbose=0)
     probs = preds[0].tolist()
 
-    if label_encoder is not None:
-        classes = label_encoder.classes_.tolist()
-    else:
-        classes = EMOTIONS
-
     emotion_idx = int(np.argmax(probs))
-    emotion = classes[emotion_idx] if emotion_idx < len(classes) else EMOTIONS[emotion_idx]
+    emotion = classes[emotion_idx]
     confidence = probs[emotion_idx]
 
-    prob_dict = {}
-    for i, e in enumerate(EMOTIONS):
-        matched = next((p for c, p in zip(classes, probs) if c.lower() == e.lower()), probs[i] if i < len(probs) else 0.0)
-        prob_dict[e] = round(matched * 100, 1)
+    prob_dict = {c: round(p * 100, 1) for c, p in zip(classes, probs)}
 
     return {
         "emotion": emotion.lower(),
