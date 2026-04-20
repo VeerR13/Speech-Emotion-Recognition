@@ -1,7 +1,14 @@
-# Speech Emotion Recognition (SER)
+# Speech Emotion Recognition
 
-A deep learning system for classifying speech into 8 emotions using a dual-input fusion architecture.
+A deep learning system for classifying speech into 8 emotions using a dual-input fusion architecture.  
 Trained on 4 public datasets — achieves **89.3% test accuracy** and **91.1% macro F1**.
+
+## Live Demo
+
+**[speech-emotion-app.hf.space](https://veerr13-speech-emotion-app.hf.space)**
+
+Record 3 seconds of audio or upload a file and watch the signal race through the pipeline in real time.  
+Hosted on HuggingFace Spaces · Docker · Keras 3.10 · TensorFlow 2.18
 
 ---
 
@@ -14,13 +21,12 @@ Trained on 4 public datasets — achieves **89.3% test accuracy** and **91.1% ma
 | Best Val Accuracy (training) | 81.41% (epoch 67/80) |
 | TTA Test Accuracy (15 passes) | ~82–83% on Kaggle |
 
-> The 89.3% figure is from full evaluation on held-out test data in Google Colab (CPU, no TTA).
+> Full evaluation on held-out test data in Google Colab (CPU, no TTA).  
 > Pre-trained model: [huggingface.co/VeerR13/Speech-Emotion-Recognition](https://huggingface.co/VeerR13/Speech-Emotion-Recognition/tree/main)
 
 ### Confusion Matrix
 
 ![Confusion Matrix](https://huggingface.co/VeerR13/Speech-Emotion-Recognition/resolve/main/results.png)
-> Pre-trained model: [huggingface.co/VeerR13/Speech-Emotion-Recognition](https://huggingface.co/VeerR13/Speech-Emotion-Recognition/tree/main)
 
 ### Per-Class Performance
 
@@ -37,39 +43,58 @@ Trained on 4 public datasets — achieves **89.3% test accuracy** and **91.1% ma
 
 ---
 
+## Web App
+
+The live demo is a premium dark-mode SPA built with Flask and vanilla JS:
+
+- **3-second WAV recorder** — uses `AudioContext + ScriptProcessor` for cross-browser compatibility (works on iOS Safari, Chrome, Firefox)
+- **Speed-of-sound analysis overlay** — when audio is submitted, a waveform blasts through 5 labeled pipeline stages at full speed, then the overlay whooshes off-screen left to reveal results
+- **Live neural architecture canvas** — section 03 shows the dual-branch CNN + MLP model as a live-animated flow diagram with data packets racing through processing nodes
+- **Three.js 3D audio sphere** — hero section Fibonacci-distributed frequency bars that respond to scroll
+- **Result panel** — emotion label, confidence %, animated probability bars per class
+
+Source: [`VeerR13/Speech-Emotion-App`](https://huggingface.co/spaces/VeerR13/Speech-Emotion-App) on HuggingFace Spaces
+
+---
+
 ## Emotions Detected
 
-`neutral` · `calm` · `happy` · `sad` · `angry` · `fear` · `disgust` · `surprise`
+`angry` · `happy` · `neutral` · `sad`
+
+> The web app is trained on a 4-class subset. The full model supports 8 classes — see per-class table above.
 
 ---
 
 ## Architecture
 
-The model uses a dual-input fusion design — a convolutional branch processes mel spectrograms while an MLP branch processes handcrafted audio features. Both branches are fused via a learned sigmoid gate.
+Dual-input fusion — CNN branch processes mel spectrograms, MLP branch processes handcrafted acoustic features. Both fuse via a learned sigmoid gate.
 
 ```
-Audio Input
+Audio Input (22,050 Hz · 3 s · mono)
     │
     ├──── Spectrogram Branch ────────────────────────────────────────────┐
-    │     Multi-scale mel spectrograms (3 channels)                      │
-    │     4× ResBlock (64→128→256→512 filters)                           │
-    │     CBAM attention (channel + spatial) per block                   │
-    │     Attention pooling → Dense(256)                                 │
-    │                                                                    ├─→ Gated Fusion → Dense(256) → Dense(128) → Softmax(8)
-    └──── Features Branch ───────────────────────────────────────────────┘
-          193-dim handcrafted features (MFCCs×4 stats, deltas, chroma,
-          spectral contrast, tonnetz, ZCR, RMS, centroid, bandwidth,
-          rolloff, pitch)
+    │     Multi-scale mel spectrograms (3 channels, FFT 512/1024/2048)  │
+    │     4× ResBlock (64 → 128 → 256 → 512 filters)                   │
+    │     CBAM attention (channel + spatial) per block                  │
+    │     Attention pooling → Dense(256)                                │
+    │                                                                   ├─→ Gated Fusion → Dense(256) → Dense(128) → Softmax
+    └──── Features Branch ──────────────────────────────────────────────┘
+          645-dim handcrafted features:
+          MFCCs (40) × 4 stats + delta/delta-delta, chroma (12),
+          mel per-band (128), spectral contrast (7), tonnetz (6),
+          ZCR, RMS, centroid, bandwidth, rolloff, piptrack pitch
           MLP: Dense(512) → Dense(256) → Dense(128) with skip connections
 ```
 
 ### Key Components
 
-- **Multi-scale spectrograms** — 3 parallel mel spectrograms with different FFT window sizes (512, 1024, 2048), stacked as RGB-like channels. Captures fine temporal detail and broad spectral shape simultaneously.
-- **CBAM attention** — applied inside each residual block. Channel attention re-weights which feature maps matter; spatial attention re-weights which time-frequency regions matter.
-- **Attention pooling** — replaces global average pooling. A learned 1D attention vector weights each time frame before summing, so the model focuses on emotionally salient segments.
-- **Gated fusion** — a sigmoid gate vector (same dimension as the concatenated embeddings) learns how much to weight each branch per prediction.
-- **Focal Loss** (γ=2.0) with label smoothing=0.1 — downweights easy examples and prevents overconfident predictions on hard-to-distinguish pairs like *neutral/calm* and *sad/neutral*.
+| Component | Role |
+|---|---|
+| **Multi-scale spectrograms** | 3 parallel mel spectrograms stacked as RGB-like channels — captures fine temporal detail and broad spectral shape |
+| **CBAM attention** | Channel + spatial attention inside each residual block |
+| **Attention pooling** | Learned 1D weights per time frame — focuses on emotionally salient segments |
+| **Gated fusion** | Sigmoid gate vector learns per-prediction weighting of CNN vs MLP branch |
+| **Focal Loss** (γ=2.0, label smoothing=0.1) | Downweights easy examples, prevents overconfidence on hard pairs |
 
 ---
 
@@ -95,101 +120,90 @@ Audio Input
 
 | File | Description |
 |---|---|
-| `SER_v2_kaggle.ipynb` | Full training notebook — runs on Kaggle T4 GPU in ~8 hours |
-| `SER_colab_eval.ipynb` | Evaluation-only notebook — runs on Google Colab, loads pretrained model |
+| `SER_v2_kaggle.ipynb` | Full training notebook — Kaggle T4 GPU, ~8 hours |
+| `SER_colab_eval.ipynb` | Evaluation-only notebook — Google Colab, loads pretrained weights |
 | `best_ser_v2.keras` | Trained model weights (89.3% test accuracy) |
 | `label_encoder.pkl` | Sklearn `LabelEncoder` mapping emotion strings ↔ class indices |
 | `scaler.pkl` | Sklearn `StandardScaler` fitted on training features |
 
-> **Pre-trained model on Hugging Face:** [VeerR13/Speech-Emotion-Recognition](https://huggingface.co/VeerR13/Speech-Emotion-Recognition/tree/main)
-> Download `best_ser_v2.keras`, `label_encoder.pkl`, and `scaler.pkl` from there to skip the 8-hour training run.
+> **Pre-trained model:** [huggingface.co/VeerR13/Speech-Emotion-Recognition](https://huggingface.co/VeerR13/Speech-Emotion-Recognition/tree/main)  
+> Download `best_ser_v2.keras`, `label_encoder.pkl`, and `scaler.pkl` to skip the 8-hour training run.
 
 ---
 
-## Quickstart: Evaluate on Google Colab
+## Quickstart: Evaluate on Colab
 
-No training required. Use the saved weights directly.
-
-### Prerequisites
-
-1. A [Kaggle account](https://kaggle.com) (free) — needed to download the 4 audio datasets
-2. A [Google account](https://drive.google.com) with Google Drive — results and features are cached there
-3. Download `best_ser_v2.keras`, `label_encoder.pkl`, `scaler.pkl` from this repo
-
-### Steps
-
-1. Open `SER_colab_eval.ipynb` in Google Colab
-2. Mount Google Drive when Cell 1 prompts you
-3. In Cell 2, paste your Kaggle API token (JSON string from `kaggle.com → Settings → API → Create New Token`):
+1. Open `SER_colab_eval.ipynb` in [Google Colab](https://colab.research.google.com)
+2. Mount Google Drive when prompted
+3. Paste your Kaggle API token in Cell 2:
    ```python
    KAGGLE_TOKEN = '{"username":"YOUR_USERNAME","key":"YOUR_KEY"}'
    ```
-4. Upload `best_ser_v2.keras`, `label_encoder.pkl`, `scaler.pkl` to `MyDrive/SER/` in your Drive
-5. Run all cells — feature extraction takes ~8 minutes, then evaluation runs automatically
+4. Upload `best_ser_v2.keras`, `label_encoder.pkl`, `scaler.pkl` to `MyDrive/SER/`
+5. Run all cells — feature extraction ~8 min, then evaluation runs automatically
 
-Feature arrays are cached to Drive after first extraction — subsequent runs skip re-extraction.
-
----
+Feature arrays are cached to Drive after first extraction.
 
 ## Quickstart: Train from Scratch on Kaggle
 
-1. Go to [kaggle.com](https://kaggle.com) → **Create Notebook**
-2. Upload `SER_v2_kaggle.ipynb`
-3. Click **+ Add Data** and add these datasets by searching:
+1. **Create Notebook** on [kaggle.com](https://kaggle.com) and upload `SER_v2_kaggle.ipynb`
+2. **+ Add Data** → search for:
    - `uwrfkaggler/ravdess-emotional-speech-audio`
    - `ejlok1/toronto-emotional-speech-set-tess`
    - `ejlok1/cremad`
    - `ejlok1/surrey-audiovisual-expressed-emotion-savee`
-4. Set accelerator to **GPU P100** (Settings → Accelerator)
-5. Click **Run All**
-
-Training runs fully unattended (~8 hours). Download `best_ser_v2.keras`, `label_encoder.pkl`, `scaler.pkl` from the Output tab when done.
+3. **Settings → Accelerator → GPU P100**
+4. **Run All** — downloads, trains, saves weights to Output tab (~8 hours)
 
 ---
 
 ## Inference Example
 
 ```python
-import pickle, numpy as np, librosa, tensorflow as tf
+import pickle, numpy as np, librosa, keras
 
-# Define custom layers (required for model deserialization)
-class ChannelMean(tf.keras.layers.Layer):
-    def call(self, x): return tf.reduce_mean(x, axis=-1, keepdims=True)
-
-class ChannelMax(tf.keras.layers.Layer):
-    def call(self, x): return tf.reduce_max(x, axis=-1, keepdims=True)
-
-class AttnWeightedSum(tf.keras.layers.Layer):
-    def call(self, inputs): return tf.reduce_sum(inputs[0] * inputs[1], axis=1)
-
-# ── Paste FocalLoss, WarmupCosine, build_model, extract_features,
-#    extract_mel_multiscale definitions from SER_colab_eval.ipynb ────────────
-
-# Load saved artifacts
+# Load artifacts
 le     = pickle.load(open('label_encoder.pkl', 'rb'))
 scaler = pickle.load(open('scaler.pkl', 'rb'))
-NC     = len(le.classes_)   # 8
 
-model = build_model(193, (128, 128, 3), NC)
-model.load_weights('best_ser_v2.keras')
-model.compile(loss=FocalLoss(gamma=2.0, smoothing=0.1), metrics=['accuracy'])
+# Register custom objects (training-only, skipped at inference)
+import keras as k
 
-# Load and preprocess audio
-SAMPLE_RATE = 22050
-N_SAMPLES   = 66150   # 3 seconds
+@k.saving.register_keras_serializable(package='custom')
+class FocalLoss(k.losses.Loss):
+    def __init__(self, gamma=2.0, smoothing=0.1, **kw):
+        super().__init__(**kw)
+        self.gamma = gamma; self.smoothing = smoothing
+    def call(self, y_true, y_pred):
+        return k.losses.categorical_crossentropy(y_true, y_pred, label_smoothing=self.smoothing)
+    def get_config(self):
+        return {**super().get_config(), 'gamma': self.gamma, 'smoothing': self.smoothing}
 
-audio, _ = librosa.load('speech.wav', sr=SAMPLE_RATE, duration=3.0)
+@k.saving.register_keras_serializable(package='custom')
+class WarmupCosine(k.optimizers.schedules.LearningRateSchedule):
+    def __init__(self, peak=1e-3, wu_steps=1000, total=10000, min_lr=1e-6, **kw):
+        super().__init__(**kw)
+        self.peak=peak; self.wu_steps=wu_steps; self.total=total; self.min_lr=min_lr
+    def __call__(self, step): return self.peak
+    def get_config(self):
+        return {'peak':self.peak,'wu_steps':self.wu_steps,'total':self.total,'min_lr':self.min_lr}
+
+k.config.enable_unsafe_deserialization()
+model = k.models.load_model('best_ser_v2.keras', compile=False)
+
+# Preprocess audio
+SR, DUR = 22050, 3
+audio, _ = librosa.load('speech.wav', sr=SR, duration=DUR)
 audio, _ = librosa.effects.trim(audio, top_db=25)
-audio    = np.pad(audio, (0, max(0, N_SAMPLES - len(audio))))[:N_SAMPLES]
+audio    = np.pad(audio, (0, max(0, SR*DUR - len(audio))))[:SR*DUR]
 
-# Extract features
+# Predict (implement extract_features / extract_mel_multiscale from notebook)
 flat = scaler.transform([extract_features(audio)])
 spec = extract_mel_multiscale(audio)[np.newaxis]
 
-# Predict
-pred    = model.predict({'spectrogram': spec, 'features': flat}, verbose=0)
+pred    = model.predict([spec, flat], verbose=0)
 emotion = le.classes_[np.argmax(pred)]
-print(f'Predicted: {emotion}  ({pred.max()*100:.1f}% confidence)')
+print(f'{emotion}  {pred.max()*100:.1f}%')
 ```
 
 ---
@@ -197,13 +211,12 @@ print(f'Predicted: {emotion}  ({pred.max()*100:.1f}% confidence)')
 ## Dependencies
 
 ```
-tensorflow>=2.15
+tensorflow-cpu>=2.18
+keras>=3.10
 librosa>=0.10
 scikit-learn>=1.3
 numpy
-matplotlib
-seaborn
-kaggle
+soundfile
 ```
 
 ---
@@ -214,5 +227,5 @@ kaggle
 |---|---|---|---|
 | [RAVDESS](https://www.kaggle.com/datasets/uwrfkaggler/ravdess-emotional-speech-audio) | 24 actors | 8 | ~1,440 |
 | [TESS](https://www.kaggle.com/datasets/ejlok1/toronto-emotional-speech-set-tess) | 2 actresses | 7 | ~2,800 |
-| [CREMA-D](https://www.kaggle.com/datasets/ejlok1/cremad) | 91 actors | 6 | ~7,442 (subset used) |
+| [CREMA-D](https://www.kaggle.com/datasets/ejlok1/cremad) | 91 actors | 6 | ~7,442 (subset) |
 | [SAVEE](https://www.kaggle.com/datasets/ejlok1/surrey-audiovisual-expressed-emotion-savee) | 4 male speakers | 7 | ~480 |
