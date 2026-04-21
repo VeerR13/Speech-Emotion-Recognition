@@ -36,6 +36,10 @@ def load_artifacts():
     global model, scaler, label_encoder
     try:
         import tensorflow as tf
+        import keras
+
+        # Enable unsafe deserialization for Lambda layers with Python functions
+        keras.config.enable_unsafe_deserialization()
 
         # ── Custom layers required for deserialization ──────────────────────
         class ChannelMean(tf.keras.layers.Layer):
@@ -118,6 +122,7 @@ def load_artifacts():
             model_path,
             custom_objects=custom_objects,
             compile=False,
+            safe_mode=False,
         )
         logger.info(f"Model loaded from {model_path}")
 
